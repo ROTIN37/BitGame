@@ -40,9 +40,10 @@ ORB = 0x07FC
 BLUE = 0x03DF
 RED = 0xF041
 PURPLE = 0xB81F
+GROUND = 0x81C0
 
 difficulty = 4
-batteryCharges = 5
+batteryCharges = 22
 last_brightness_reset = 0
 cooldown_progress = 1 
 
@@ -274,6 +275,77 @@ def generate_maze(rows, cols):
     return maze
 
 
+def generate_map_with_rooms(rows, cols, max_room_size, num_rooms, start_x=1, start_y=1):
+
+    # Initialize the map with walls
+    map_grid = [[1 for _ in range(cols)] for _ in range(rows)]
+
+    # List to store room coordinates (x, y, width, height)
+    rooms = []
+
+    for _ in range(num_rooms):
+        # Random room size
+        room_width = random.randint(3, max_room_size)
+        room_height = random.randint(3, max_room_size)
+
+        # Random room position
+        room_x = random.randint(1, cols - room_width - 1)
+        room_y = random.randint(1, rows - room_height - 1)
+
+        # Check for room overlap
+        overlap = False
+        for other_room in rooms:
+            other_x, other_y, other_width, other_height = other_room
+            if (room_x < other_x + other_width and room_x + room_width > other_x and
+                room_y < other_y + other_height and room_y + room_height > other_y):
+                overlap = True
+                break
+
+        if not overlap:
+            # Add the room to the list
+            rooms.append((room_x, room_y, room_width, room_height))
+
+            # Carve out the room in the map
+            for y in range(room_y, room_y + room_height):
+                for x in range(room_x, room_x + room_width):
+                    map_grid[y][x] = 0
+
+    # Ensure the starting position is connected to the first room
+    if rooms:
+        first_room_x, first_room_y, first_room_width, first_room_height = rooms[0]
+        first_room_center_x = first_room_x + first_room_width // 2
+        first_room_center_y = first_room_y + first_room_height // 2
+
+        # Carve a horizontal corridor from the starting position to the first room
+        for x in range(min(start_x, first_room_center_x), max(start_x, first_room_center_x) + 1):
+            map_grid[start_y][x] = 0
+
+        # Carve a vertical corridor from the starting position to the first room
+        for y in range(min(start_y, first_room_center_y), max(start_y, first_room_center_y) + 1):
+            map_grid[y][first_room_center_x] = 0
+
+    # Connect the rooms with corridors
+    for i in range(1, len(rooms)):
+        # Get the center of the current room and the previous room
+        x1, y1, w1, h1 = rooms[i - 1]
+        x2, y2, w2, h2 = rooms[i]
+
+        center_x1, center_y1 = x1 + w1 // 2, y1 + h1 // 2
+        center_x2, center_y2 = x2 + w2 // 2, y2 + h2 // 2
+
+        # Carve a horizontal corridor
+        for x in range(min(center_x1, center_x2), max(center_x1, center_x2) + 1):
+            map_grid[center_y1][x] = 0
+
+        # Carve a vertical corridor
+        for y in range(min(center_y1, center_y2), max(center_y1, center_y2) + 1):
+            map_grid[y][center_x2] = 0
+    print_maze(map_grid)
+    return map_grid
+
+
+
+
 # Update angle lookup tables
 def update_angle_lookup():
     global angle_lookup, cos_lookup, sin_lookup
@@ -374,7 +446,7 @@ def handle_input():
         if orb_x - 1 <= player_x < orb_x + 1 and orb_y - 1 <= player_y < orb_y + 1:
             orbs.remove(orb)
             print(f"Orb collected at position ({orb_x}, {orb_y})!")
-            batteryCharges = 5
+            batteryCharges = 22
 
     # Location DEBUG
     if buttons.state(Buttons.B):
@@ -389,12 +461,29 @@ def TerminateExecution():
 
 def render(display):
     global brightness_factor
-    display.fill(0)
+    display.fill(0) # Draw ground
 
-    # Draw sky
-    sky_brightness = max(0, min(1, brightness_factor))
-    sky_color = adjust_color_brightness(SKY, sky_brightness)
-    display.rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT // 2, sky_color, True)
+    # Draw sky with gradient
+    for y in range(SCREEN_HEIGHT // 2):  # Only draw the top half of the screen
+        # Calculate brightness based on distance from the top
+        distance_factor = y / (SCREEN_HEIGHT // 2)  # Normalize distance (0 at top, 1 at center)
+        brightness = max(0, 1 - distance_factor) ** brightness_factor  # Decrease brightness toward the center
+        sky_color = adjust_color_brightness(SKY, brightness)
+
+        # Draw a horizontal line for the current row
+        display.line(0, y, SCREEN_WIDTH, y, sky_color)
+
+    # Draw ground with gradient
+    for y in range(SCREEN_HEIGHT // 2, SCREEN_HEIGHT):  # Only draw the bottom half of the screen
+        # Calculate brightness based on distance from the center
+        distance_factor = (y - SCREEN_HEIGHT // 2) / (SCREEN_HEIGHT // 2)  # Normalize distance (0 at center, 1 at bottom)
+        brightness = max(0, distance_factor) * brightness_factor  # Increase brightness toward the bottom
+        ground_color = adjust_color_brightness(GROUND, brightness)
+
+        # Draw a horizontal line for the current row
+        display.line(0, y, SCREEN_WIDTH, y, ground_color)
+
+
 
     # Create a depth buffer to store wall distances
     depth_buffer = [MAX_DEPTH] * SCREEN_WIDTH
@@ -515,6 +604,9 @@ def render(display):
             screen_x = int((angle_to_player + HALF_FOV) * (SCREEN_WIDTH / FOV))
             player_size = max(5, int(40 / dist))  # Scale size based on distance
 
+            brightness = max(0, 1 - dist / MAX_DEPTH) * brightness_factor
+            colorDark = adjust_color_brightness(color, brightness)
+
             # Check if the player is behind the wall at this screen position
             if dist < depth_buffer[screen_x]:
                 # Draw the player
@@ -523,7 +615,7 @@ def render(display):
                     (SCREEN_HEIGHT // 2) - player_size // 2,
                     player_size,
                     player_size * 2,
-                    color,
+                    colorDark,
                     True
                 )
     batteryDraw()
@@ -669,8 +761,9 @@ def batteryDraw():
     global batteryCharges, cooldown_progress
 
     # Draw the battery outline
-    display.rect(5, 5, 22, 9, WHITE, False)
-    display.rect(27, 6, 2, 7, WHITE, True)
+    display.rect(5, 5, 22*4+2, 9, WHITE, False)
+    display.rect(93+2, 6, 2, 7, WHITE, True)
+    # display.rect(27, 6, 2, 7, WHITE, True)
 
     # Draw the battery charges
     for i in range(batteryCharges):
@@ -706,7 +799,7 @@ def NextLevel():
             update_angle_lookup()
 
 
-def Reset():
+def ResetM():
     
     # Resets the game with a new maze and ensures the player starting position is valid.
     # Also places new orbs in the maze.
@@ -743,6 +836,39 @@ def Reset():
 
     
     print("RESET TRIGGERED - New maze generated with clear starting area")
+
+def Reset():
+    global scene, player_x, player_y, player_angle, lvl1_x, lvl1_y
+
+    # Generate a map with rooms
+    rows, cols = 71, 71
+    max_room_size = 10
+    num_rooms = 15
+    scene = generate_map_with_rooms(rows, cols, max_room_size, num_rooms)
+
+    # Ensure the starting area is clear
+    start_x, start_y = 1, 1  # Starting position
+    for dy in range(0, 2):
+        for dx in range(0, 2):
+            if 0 <= start_y + dy < len(scene) and 0 <= start_x + dx < len(scene[0]):
+                scene[start_y + dy][start_x + dx] = 0
+
+    # Place player at the cleared starting position
+    player_x = float(start_x + 0.5)
+    player_y = float(start_y + 0.5)
+    player_angle = 45
+
+    # Update angle lookup tables
+    update_angle_lookup()
+
+    # Place new orbs in the maze
+    place_orbs(10)  # Place 10 orbs by default
+
+    # Update the scene with the exit
+    scene, lvl1_x, lvl1_y = find_and_update(scene, lvl1_x, lvl1_y)
+
+    print("RESET TRIGGERED - New map with rooms generated")
+
 
 scene = generate_maze(21, 21)
 place_orbs(10)
